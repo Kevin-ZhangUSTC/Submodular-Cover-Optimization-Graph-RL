@@ -26,6 +26,7 @@ matplotlib.use("Agg")                         # headless backend
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import scipy.io as sio
 
 import config
 from src.kernel import build_toeplitz_matrix
@@ -162,7 +163,13 @@ def main() -> None:
     print(f"  N={args.N}  sigma={args.sigma}  eps_frac={args.eps_frac}"
           f"  nu={args.nu}  l={args.length_scale}")
 
-    J = build_toeplitz_matrix(args.N, nu=args.nu, length_scale=args.length_scale)
+    # J = build_toeplitz_matrix(args.N, nu=args.nu, length_scale=args.length_scale)
+    MAT_FILE = "Kernal_-30.mat"  # expected to be in working directory
+    MAT_VAR = "Kernal_exp"
+    mat = sio.loadmat(MAT_FILE)
+    J_full = mat[MAT_VAR]
+    J = np.array(J_full[:args.N, :args.N], dtype=float)
+
     epsilon = args.eps_frac * float(np.trace(J))
 
     print(f"  trace(J) = {np.trace(J):.4f}   epsilon = {epsilon:.4f}")
