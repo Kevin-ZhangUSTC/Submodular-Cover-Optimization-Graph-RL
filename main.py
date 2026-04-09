@@ -163,7 +163,10 @@ def main() -> None:
     print(f"  N={args.N}  sigma={args.sigma}  eps_frac={args.eps_frac}"
           f"  nu={args.nu}  l={args.length_scale}")
 
+    
     # J = build_toeplitz_matrix(args.N, nu=args.nu, length_scale=args.length_scale)
+
+    # For simplicity, we load a precomputed kernel matrix from a .mat file.
     MAT_FILE = "Kernal_-30.mat"  # expected to be in working directory
     MAT_VAR = "Kernal_exp"
     mat = sio.loadmat(MAT_FILE)
