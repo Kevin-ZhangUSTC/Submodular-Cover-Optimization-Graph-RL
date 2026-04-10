@@ -32,7 +32,7 @@ import config
 from src.kernel import build_toeplitz_matrix
 from src.environment import SensorSelectionEnv
 from src.gnn_model import GNNPolicy
-from src.imitation import get_greedy_trajectory
+from src.optimal_solver import get_greedy_trajectory
 from src.dataset import ProblemInstanceGenerator
 
 
