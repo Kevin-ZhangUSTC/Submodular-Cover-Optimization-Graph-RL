@@ -273,3 +273,91 @@ class REINFORCETrainer:
         if len(self.episode_lengths) == 0:
             return 0.0
         return float(np.mean(self.episode_lengths))
+
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def beam_rollout(
+        self,
+        env: SensorSelectionEnv,
+        n_rollouts: int = 10,
+        rng_seed: int = 0,
+    ) -> Dict[str, object]:
+        """Run *n_rollouts* **stochastic** rollouts and return the best result.
+
+        This implements Plan D: beam search / stochastic rollouts at test time.
+        Even a mediocre learned policy can beat greedy when multiple stochastic
+        rollouts are combined, because each rollout explores a different sensor
+        ordering guided by the learned probability distribution.
+
+        "Best" means:
+          1. Among rollouts that satisfy the constraint, return the one with
+             the fewest sensors selected.
+          2. If no rollout satisfies the constraint, return the one with the
+             lowest posterior trace (closest to feasibility).
+
+        Parameters
+        ----------
+        env : SensorSelectionEnv
+            The environment to evaluate on.  Its state is **not** modified
+            permanently (each rollout calls env.reset() internally).
+        n_rollouts : int
+            Number of stochastic trajectories to sample.
+        rng_seed : int
+            Seed for PyTorch random sampling (ensures reproducibility).
+
+        Returns
+        -------
+        dict with keys:
+          - ``n_selected``  : int   -- sensors used in the best rollout
+          - ``trace``       : float -- posterior trace of the best rollout
+          - ``satisfied``   : bool  -- whether the best rollout satisfies ε
+          - ``selected_mask``: np.ndarray -- bool mask of selected sensors
+          - ``rollout_n``   : int   -- index of the winning rollout
+        """
+        torch.manual_seed(rng_seed)
+        adj_tensor = torch.tensor(env.adj_norm, dtype=torch.float32)
+        adj_neg_tensor = (
+            torch.tensor(env.adj_neg, dtype=torch.float32)
+            if self.policy.signed_adj
+            else None
+        )
+
+        best: Dict[str, object] = {}
+        best_key = (False, env.N + 1, float("inf"))  # (not_sat, n_selected, trace)
+
+        self.policy.eval()
+        with torch.no_grad():
+            for rollout_idx in range(n_rollouts):
+                state = env.reset()
+                node_features, _, _, selected = state
+                done = False
+                while not done:
+                    nf = torch.tensor(node_features, dtype=torch.float32)
+                    mask = torch.tensor(~selected, dtype=torch.bool)
+                    if not mask.any():
+                        break
+                    # Stochastic sampling (not deterministic)
+                    action, _, _, _ = self.policy.get_action(
+                        nf, adj_tensor, mask,
+                        deterministic=False,
+                        adj_neg=adj_neg_tensor,
+                    )
+                    state, _, done, _ = env.step(action)
+                    node_features, _, _, selected = state
+
+                sat = env.is_satisfied
+                n_sel = env.n_selected
+                trace = env.current_trace
+                # Lower key = better: (satisfied DESC, n_selected ASC, trace ASC)
+                key = (not sat, n_sel, trace)
+                if not best or key < best_key:
+                    best_key = key
+                    best = {
+                        "n_selected": n_sel,
+                        "trace": trace,
+                        "satisfied": sat,
+                        "selected_mask": env.selected.copy(),
+                        "rollout_n": rollout_idx,
+                    }
+        self.policy.train()
+        return best

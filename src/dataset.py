@@ -110,11 +110,16 @@ class ProblemInstanceGenerator:
 # ──────────────────────────────────────────────────────────────────────────────
 
 class CurriculumScheduler:
-    """Three-stage difficulty curriculum.
+    """Three-stage difficulty curriculum, extended with a large-N J₀ stage.
 
-    Stage 0 (easy)  : small N, large eps_frac, smooth Matern kernels
-    Stage 1 (medium): moderate N, moderate eps_frac, Matern kernels
-    Stage 2 (hard)  : larger N, small eps_frac, all kernel types
+    Stage 0 (easy)       : small N (≤10), large eps_frac, smooth Matérn kernels
+    Stage 1 (medium)     : moderate N (≤20), moderate eps_frac, Matérn kernels
+    Stage 2 (hard)       : N≤50, small eps_frac, all kernel types
+    Stage 3 (large-N J₀) : N≤256, very small eps_frac, J₀ kernel only  (Plan B)
+
+    The policy trained on stages 0-2 learns the qualitative "pick evenly spaced
+    sensors" pattern; stage 3 exploits the J₀ shift-invariance to generalise
+    this pattern to N=256 without relearning from scratch.
 
     The scheduler wraps a ``ProblemInstanceGenerator`` per stage and
     advances when the rolling success rate exceeds ``advance_threshold``.
@@ -131,6 +136,7 @@ class CurriculumScheduler:
         (10,  0.40, 0.60, ["matern"], [1.5, 2.5]),
         (20,  0.20, 0.40, ["matern"], [0.5, 1.5, 2.5]),
         (50,  0.10, 0.20, ["matern", "j0"], [0.5, 1.5, 2.5]),
+        (256, 0.05, 0.15, ["j0"], [1.5]),               # large-N J₀ stage (Plan B)
     ]
 
     def __init__(

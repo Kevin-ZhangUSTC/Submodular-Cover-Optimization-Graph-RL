@@ -236,7 +236,7 @@ class TestRLBeatsGreedy:
             torch.manual_seed(seed)
             np.random.seed(seed)
             policy = GNNPolicy(
-                node_feat_dim=5, hidden_dim=32, n_layers=2, use_residual=True,
+                node_feat_dim=8, hidden_dim=32, n_layers=2, use_residual=True,
             )
             # NO imitation — policy must discover the optimal set autonomously
             trainer = REINFORCETrainer(policy, lr=5e-3, entropy_coef=0.15)
@@ -282,7 +282,7 @@ class TestRLBeatsGreedy:
         J = build_toeplitz_matrix(10, nu=1.5, length_scale=3.0)
         env = SensorSelectionEnv(J, sigma=0.5, epsilon=0.25 * float(np.trace(J)))
 
-        policy = GNNPolicy(node_feat_dim=5, hidden_dim=32, n_layers=2, use_residual=True)
+        policy = GNNPolicy(node_feat_dim=8, hidden_dim=32, n_layers=2, use_residual=True)
         trainer = REINFORCETrainer(policy, lr=3e-3, entropy_coef=0.05)
         for _ in range(500):
             trainer.train_episode(env)

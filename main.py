@@ -79,6 +79,16 @@ def parse_args() -> argparse.Namespace:
                    default=config.USE_RESIDUAL)
     p.add_argument("--use_attention_pooling", action="store_true",
                    default=config.USE_ATTENTION_POOLING)
+    # Scalability enhancements for large N / J₀ kernels
+    p.add_argument("--band_radius", type=int, default=config.BAND_RADIUS,
+                   help="Sparse adjacency band radius (0=dense, >0=O(N·r) edges)")
+    p.add_argument("--step_penalty", type=float, default=config.STEP_PENALTY,
+                   help="Per-step sensor cost multiplier (default 1.0; try 2.0)")
+    p.add_argument("--beam_width", type=int, default=config.BEAM_WIDTH,
+                   help="Stochastic rollouts at eval time (1=greedy, >1=beam)")
+    p.add_argument("--period_hint", type=float, default=config.PERIOD_HINT,
+                   help="J₀ period hint for Fourier features (0=disabled; "
+                        "recommended: 2.4 * length_scale)")
     # Imitation warm-start (Idea 1)
     p.add_argument("--imitation_episodes", type=int,
                    default=config.IMITATION_EPISODES)
@@ -111,7 +121,12 @@ def build_primary_env(args: argparse.Namespace) -> SensorSelectionEnv:
             kernel_type=args.kernel_type
         )
     epsilon = args.eps_frac * float(np.trace(J))
-    return SensorSelectionEnv(J, sigma=args.sigma, epsilon=epsilon)
+    return SensorSelectionEnv(
+        J, sigma=args.sigma, epsilon=epsilon,
+        band_radius=args.band_radius,
+        step_penalty=args.step_penalty,
+        period_hint=args.period_hint,
+    )
 
 
 def greedy_baseline(env: SensorSelectionEnv) -> tuple[int, float]:
@@ -304,11 +319,18 @@ def main() -> None:
     # ── 6. Final evaluation ───────────────────────────────────────────────────
     res = evaluate_policy(policy, env, n_episodes=1)
     print(f"\n{'='*60}")
-    print("  Final evaluation (deterministic)")
+    print("  Final evaluation (deterministic greedy decoding)")
     print(f"  GNN+RL  : {res['n_selected']} sensors  "
           f"(trace={res['trace']:.4f}, satisfied={res['satisfied']})")
     print(f"  Greedy  : {n_greedy} sensors  "
           f"(trace={trace_greedy:.4f})")
+
+    # Beam search evaluation (Plan D)
+    if args.beam_width > 1:
+        beam_res = rl_trainer.beam_rollout(env, n_rollouts=args.beam_width, rng_seed=0)
+        print(f"  GNN+RL beam ({args.beam_width} rollouts): "
+              f"{beam_res['n_selected']} sensors  "
+              f"(trace={beam_res['trace']:.4f}, satisfied={beam_res['satisfied']})")
     print(f"{'='*60}\n")
 
     # ── 7. Save checkpoint ────────────────────────────────────────────────────
@@ -320,6 +342,9 @@ def main() -> None:
             "epsilon": torch.tensor(env.epsilon, dtype=torch.float64),
             "greedy_trajectory": greedy_traj,
             "signed_adj": signed_adj,
+            "band_radius": args.band_radius,
+            "step_penalty": args.step_penalty,
+            "period_hint": args.period_hint,
         },
         args.checkpoint,
     )

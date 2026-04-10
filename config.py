@@ -23,7 +23,7 @@ KERNEL_LENGTH_SCALE = 3.0  # spatial length-scale
 # ──────────────────────────────────────────────────────────────────────────────
 # GNN architecture
 # ──────────────────────────────────────────────────────────────────────────────
-NODE_FEAT_DIM = 5       # input feature dimension per node (5 after adding marginal gain)
+NODE_FEAT_DIM = 8       # input feature dimension per node (8: 5 original + position + 2 Fourier)
 HIDDEN_DIM = 64         # hidden dimension in GNN layers
 N_GNN_LAYERS = 3        # number of message-passing layers
 LAYER_TYPE = "sage"     # "sage" or "gat"
@@ -32,6 +32,17 @@ ATTENTION_DROPOUT = 0.0 # dropout on GAT attention weights
 USE_RESIDUAL = False    # add residual connections to GNN layers
 USE_ATTENTION_POOLING = False  # use attention pooling in value head
 SIGNED_ADJ = False      # use signed adjacency split (for J0 kernel)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Scalability enhancements for large N (N=256) on J₀ kernels
+# ──────────────────────────────────────────────────────────────────────────────
+BAND_RADIUS = 0         # 0 = dense adj; >0 = sparse band-limited adj (O(N·band_radius))
+STEP_PENALTY = 1.0      # per-step cost multiplier (-step_penalty/N per action); use 2.0
+                        # for stronger parsimony pressure at large N
+BEAM_WIDTH = 1          # number of stochastic rollouts at eval time; 1 = greedy decoding;
+                        # >1 = beam search (run BEAM_WIDTH rollouts, take best result)
+PERIOD_HINT = 0.0       # J₀ periodicity hint: set to 2.4 * length_scale to enable
+                        # Fourier positional features (node features 6-7)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Reinforcement-learning / training

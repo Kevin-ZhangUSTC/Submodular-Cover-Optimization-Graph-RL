@@ -44,7 +44,7 @@ def env(small_J):
 
 @pytest.fixture
 def policy():
-    return GNNPolicy(node_feat_dim=5, hidden_dim=16, n_layers=2)
+    return GNNPolicy(node_feat_dim=8, hidden_dim=16, n_layers=2)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -160,7 +160,7 @@ class TestEnvironment:
 
     def test_reset_returns_correct_shape(self, env):
         nf, adj, trace, sel = env.reset()
-        assert nf.shape == (env.N, 5)
+        assert nf.shape == (env.N, 8)
         assert adj.shape == (env.N, env.N)
         assert float(trace) == pytest.approx(env.trace_J)
         assert not sel.any()
@@ -275,6 +275,74 @@ class TestEnvironment:
     def test_env_pd_flag_true_for_matern(self, env):
         """Matern-based env should have j_is_pd=True."""
         assert env.j_is_pd
+
+    # ── Scalability enhancements (Plans A, C, E) ──
+
+    def test_position_embedding_feature_range(self, env):
+        """Feature 5 (position) should be in [0, 1] and monotonically increasing."""
+        nf, _, _, _ = env.reset()
+        pos = nf[:, 5]
+        assert np.all(pos >= 0.0 - 1e-6)
+        assert np.all(pos <= 1.0 + 1e-6)
+        assert pos[0] == pytest.approx(0.0, abs=1e-6)
+        assert pos[-1] == pytest.approx(1.0, abs=1e-6)
+        # Monotonically increasing
+        assert np.all(np.diff(pos) >= -1e-6)
+
+    def test_fourier_features_zero_without_period_hint(self, env):
+        """Features 6 and 7 should be zero when period_hint=0 (default)."""
+        nf, _, _, _ = env.reset()
+        np.testing.assert_allclose(nf[:, 6], 0.0, atol=1e-6)
+        np.testing.assert_allclose(nf[:, 7], 0.0, atol=1e-6)
+
+    def test_fourier_features_nonzero_with_period_hint(self, small_J):
+        """Features 6 and 7 should be non-trivial when period_hint > 0."""
+        epsilon = 0.3 * float(np.trace(small_J))
+        env = SensorSelectionEnv(small_J, sigma=0.5, epsilon=epsilon, period_hint=3.0)
+        nf, _, _, _ = env.reset()
+        # cos(0) = 1, so feature 6 of node 0 should be 1
+        assert nf[0, 6] == pytest.approx(1.0, abs=1e-5)
+        # sin(0) = 0, so feature 7 of node 0 should be 0
+        assert nf[0, 7] == pytest.approx(0.0, abs=1e-5)
+        # Not all the same
+        assert not np.allclose(nf[:, 6], nf[0, 6])
+
+    def test_band_radius_adj_is_sparse(self, small_J):
+        """With band_radius=1, adjacency only has entries for |i-j| <= 1."""
+        epsilon = 0.3 * float(np.trace(small_J))
+        N = small_J.shape[0]
+        env = SensorSelectionEnv(small_J, sigma=0.5, epsilon=epsilon, band_radius=1)
+        adj = env.adj_norm
+        for i in range(N):
+            for j in range(N):
+                if abs(i - j) > 1:
+                    assert adj[i, j] == pytest.approx(0.0, abs=1e-12), (
+                        f"Expected adj[{i},{j}]=0 with band_radius=1"
+                    )
+
+    def test_band_radius_zero_is_dense(self, env):
+        """Default band_radius=0 should give a dense (fully-connected) adjacency."""
+        # The default fixture env has band_radius=0 (dense)
+        assert env.band_radius == 0
+        # At least some off-band entries should be non-zero for a smooth Matern
+        N = env.N
+        if N > 2:
+            # Check entry at distance > 1 is non-zero (smooth kernel)
+            assert env.adj_norm[0, -1] > 0.0 or env.adj_norm[0, 2] > 0.0
+
+    def test_step_penalty_affects_reward(self, small_J):
+        """Higher step_penalty should give lower per-step reward."""
+        epsilon = 0.3 * float(np.trace(small_J))
+        env_default = SensorSelectionEnv(small_J, sigma=0.5, epsilon=epsilon,
+                                         step_penalty=1.0)
+        env_strong = SensorSelectionEnv(small_J, sigma=0.5, epsilon=epsilon,
+                                        step_penalty=2.0)
+        env_default.reset()
+        env_strong.reset()
+        _, r_default, _, _ = env_default.step(0)
+        _, r_strong, _, _ = env_strong.step(0)
+        # The cost term is -step_penalty/N; stronger penalty → lower reward
+        assert r_strong <= r_default
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -418,7 +486,7 @@ class TestGNNModel:
     def test_policy_gat_runs(self, env):
         """GAT-based policy should produce correct output shapes."""
         pol = GNNPolicy(
-            node_feat_dim=5, hidden_dim=16, n_layers=2,
+            node_feat_dim=8, hidden_dim=16, n_layers=2,
             layer_type="gat", n_heads=4
         )
         nf, adj, _, selected = env.reset()
@@ -431,7 +499,7 @@ class TestGNNModel:
 
     def test_policy_attention_pooling_runs(self, env):
         pol = GNNPolicy(
-            node_feat_dim=5, hidden_dim=16, n_layers=2,
+            node_feat_dim=8, hidden_dim=16, n_layers=2,
             use_attention_pooling=True
         )
         nf, adj, _, selected = env.reset()
@@ -450,7 +518,7 @@ class TestGNNModel:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             env6 = SensorSelectionEnv(J, sigma=0.5, epsilon=epsilon)
-        pol = GNNPolicy(node_feat_dim=5, hidden_dim=16, n_layers=2, signed_adj=True)
+        pol = GNNPolicy(node_feat_dim=8, hidden_dim=16, n_layers=2, signed_adj=True)
         nf, adj, _, selected = env6.reset()
         x = torch.tensor(nf, dtype=torch.float32)
         A_pos = torch.tensor(env6.adj_pos, dtype=torch.float32)
@@ -493,7 +561,7 @@ class TestRLTrainer:
 
     def test_compute_returns_discounting(self):
         """Returns must be discounted correctly."""
-        pol = GNNPolicy(node_feat_dim=5, hidden_dim=8, n_layers=1)
+        pol = GNNPolicy(node_feat_dim=8, hidden_dim=8, n_layers=1)
         trainer = REINFORCETrainer(pol, gamma=0.9)
         rewards = [1.0, 0.0, 1.0]
         returns = trainer._compute_returns(rewards)
@@ -518,6 +586,35 @@ class TestRLTrainer:
         stats = trainer.train_multi_env_episode(envs)
         assert "env_index" in stats
         assert stats["env_index"] in (0.0, 1.0)
+
+    def test_beam_rollout_returns_valid_result(self, policy, env):
+        """beam_rollout should return a dict with expected keys and valid values."""
+        trainer = REINFORCETrainer(policy, lr=1e-3)
+        result = trainer.beam_rollout(env, n_rollouts=5, rng_seed=0)
+        assert "n_selected" in result
+        assert "trace" in result
+        assert "satisfied" in result
+        assert "selected_mask" in result
+        assert "rollout_n" in result
+        assert 0 <= result["n_selected"] <= env.N
+        assert result["trace"] >= 0.0
+        assert isinstance(result["satisfied"], bool)
+        assert result["selected_mask"].shape == (env.N,)
+        assert 0 <= result["rollout_n"] < 5
+
+    def test_beam_rollout_better_than_or_equal_to_single(self, env):
+        """More rollouts should give a result with at most as many sensors."""
+        torch.manual_seed(7)
+        np.random.seed(7)
+        policy_k = GNNPolicy(node_feat_dim=8, hidden_dim=16, n_layers=2)
+        trainer = REINFORCETrainer(policy_k, lr=3e-3, entropy_coef=0.05)
+        for _ in range(50):
+            trainer.train_episode(env)
+        r1 = trainer.beam_rollout(env, n_rollouts=1, rng_seed=0)
+        rk = trainer.beam_rollout(env, n_rollouts=20, rng_seed=0)
+        # beam with k=20 should use no more sensors than k=1 (it picks the best)
+        if r1["satisfied"] and rk["satisfied"]:
+            assert rk["n_selected"] <= r1["n_selected"]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -613,7 +710,7 @@ class TestDataset:
         )
         for _ in range(20):
             sched.record(True)
-        assert sched.stage <= 2
+        assert sched.stage <= 3
 
     def test_curriculum_sample_returns_env(self):
         sched = CurriculumScheduler(n_min=5, n_max=20, seed=0)
@@ -640,6 +737,23 @@ class TestDataset:
             assert np.all(nf[:, 4] >= 0.0 - 1e-6)
             assert np.all(nf[:, 4] <= 1.0 + 1e-6)
 
+    def test_curriculum_stage3_is_j0(self):
+        """Stage 3 (large-N) curriculum should produce J₀ kernel environments."""
+        sched = CurriculumScheduler(
+            n_min=5, n_max=256, advance_threshold=0.0, window=1, seed=42
+        )
+        # Force advance to stage 3
+        for _ in range(4):
+            sched.record(True)
+            sched.record(True)
+        assert sched.stage == 3
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            env = sched.sample()
+        assert isinstance(env, SensorSelectionEnv)
+        assert env.N >= 5
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Integration test: full short training run
@@ -657,7 +771,7 @@ class TestIntegration:
         epsilon = 0.25 * float(np.trace(J))
         env = SensorSelectionEnv(J, sigma=0.5, epsilon=epsilon)
 
-        policy = GNNPolicy(node_feat_dim=5, hidden_dim=32, n_layers=2)
+        policy = GNNPolicy(node_feat_dim=8, hidden_dim=32, n_layers=2)
         trainer = REINFORCETrainer(policy, lr=3e-3, entropy_coef=0.05)
 
         for _ in range(300):

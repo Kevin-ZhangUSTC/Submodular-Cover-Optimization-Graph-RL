@@ -147,6 +147,8 @@ def parse_args() -> argparse.Namespace:
                    help="Run brute-force (only for small N)")
     p.add_argument("--n_random", type=int, default=10,
                    help="Number of random-baseline runs to average")
+    p.add_argument("--beam_width", type=int, default=config.BEAM_WIDTH,
+                   help="Stochastic rollouts for beam search (1=greedy, >1=beam)")
     # Multi-instance evaluation (Idea 4)
     p.add_argument("--eval_multi", action="store_true",
                    help="Evaluate generalisation on randomly generated instances")
@@ -168,8 +170,16 @@ def _load_policy_and_env(args: argparse.Namespace):
     J = ckpt["J"].numpy()
     epsilon = float(ckpt["epsilon"])
     signed_adj = ckpt.get("signed_adj", saved_args.get("signed_adj", False))
+    band_radius = ckpt.get("band_radius", saved_args.get("band_radius", 0))
+    step_penalty = ckpt.get("step_penalty", saved_args.get("step_penalty", 1.0))
+    period_hint = ckpt.get("period_hint", saved_args.get("period_hint", 0.0))
 
-    env = SensorSelectionEnv(J, sigma=saved_args["sigma"], epsilon=epsilon)
+    env = SensorSelectionEnv(
+        J, sigma=saved_args["sigma"], epsilon=epsilon,
+        band_radius=band_radius,
+        step_penalty=step_penalty,
+        period_hint=period_hint,
+    )
 
     policy = GNNPolicy(
         node_feat_dim=config.NODE_FEAT_DIM,
@@ -202,6 +212,8 @@ def main() -> None:
           f"trace(J)={np.trace(env.J):.4f}  epsilon={env.epsilon:.4f}\n")
 
     # ── Standard single-instance evaluation ──────────────────────────────────
+    from src.rl_trainer import REINFORCETrainer
+
     t0 = time.perf_counter()
     rl_res = run_policy(policy, env)
     dt_rl = time.perf_counter() - t0
@@ -226,25 +238,42 @@ def main() -> None:
             bf_res = run_brute_force(env)
             dt_bf = time.perf_counter() - t0
 
-    header = f"  {'Method':<20} {'# Sensors':>10} {'Trace':>12} {'Satisfied':>10}"
+    # Beam search evaluation (Plan D)
+    beam_res = None
+    dt_beam = 0.0
+    if args.beam_width > 1:
+        # Create a temporary trainer (no training, just uses beam_rollout)
+        tmp_trainer = REINFORCETrainer(policy, lr=0.0)
+        t0 = time.perf_counter()
+        beam_res = tmp_trainer.beam_rollout(env, n_rollouts=args.beam_width, rng_seed=0)
+        dt_beam = time.perf_counter() - t0
+
+    header = f"  {'Method':<25} {'# Sensors':>10} {'Trace':>12} {'Satisfied':>10}"
     print(header)
     print("  " + "-" * (len(header) - 2))
 
     tag = lambda s: "Yes" if s else "No"
-    print(f"  {'GNN+RL':<20} {rl_res['n_selected']:>10d} "
+    print(f"  {'GNN+RL (greedy decode)':<25} {rl_res['n_selected']:>10d} "
           f"{rl_res['trace']:>12.4f} {tag(rl_res['satisfied']):>10}")
-    print(f"  {'Greedy':<20} {gr_res['n_selected']:>10d} "
+    if beam_res is not None:
+        label = f"GNN+RL (beam k={args.beam_width})"
+        print(f"  {label:<25} {beam_res['n_selected']:>10d} "
+              f"{beam_res['trace']:>12.4f} {tag(beam_res['satisfied']):>10}")
+    print(f"  {'Greedy':<25} {gr_res['n_selected']:>10d} "
           f"{gr_res['trace']:>12.4f} {tag(gr_res['satisfied']):>10}")
-    print(f"  {'Random (avg)':<20} {rand_mean:>10.1f} "
+    print(f"  {'Random (avg)':<25} {rand_mean:>10.1f} "
           f"{'-':>12} {'-':>10}")
     if bf_res is not None:
-        print(f"  {'Brute-force (opt.)':<20} {bf_res['n_selected']:>10d} "
+        print(f"  {'Brute-force (opt.)':<25} {bf_res['n_selected']:>10d} "
               f"{bf_res['trace']:>12.4f} {tag(bf_res['satisfied']):>10}")
 
-    print(f"\n  GNN+RL solve time : {dt_rl*1e3:.2f} ms")
-    print(f"  Greedy solve time : {dt_gr*1e3:.2f} ms")
+    print(f"\n  GNN+RL solve time   : {dt_rl*1e3:.2f} ms")
+    if beam_res is not None:
+        print(f"  Beam search time    : {dt_beam*1e3:.2f} ms  "
+              f"(k={args.beam_width} rollouts)")
+    print(f"  Greedy solve time   : {dt_gr*1e3:.2f} ms")
     if bf_res is not None:
-        print(f"  Brute-force time  : {dt_bf*1e3:.2f} ms")
+        print(f"  Brute-force time    : {dt_bf*1e3:.2f} ms")
 
     # ── Multi-instance generalisation evaluation (Idea 4) ────────────────────
     if args.eval_multi:
