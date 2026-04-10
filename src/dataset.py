@@ -137,6 +137,9 @@ class CurriculumScheduler:
         (20,  0.20, 0.40, ["matern"], [0.5, 1.5, 2.5]),
         (50,  0.10, 0.20, ["matern", "j0"], [0.5, 1.5, 2.5]),
         (256, 0.05, 0.15, ["j0"], [1.5]),               # large-N J₀ stage (Plan B)
+        # eps_frac in [0.05, 0.15]: tight enough to force the policy to use
+        # sparse, evenly-spaced sensor patterns (which are optimal for J₀) but
+        # loose enough that a feasible solution exists for typical N≤256 problems.
     ]
 
     def __init__(

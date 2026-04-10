@@ -294,14 +294,27 @@ class SensorSelectionEnv:
         return float(self.trace_J - reduction)
 
     def _compute_single_gains(self) -> np.ndarray:
-        """Precompute the single-sensor marginal gain for every node.
+        """Compute the single-sensor marginal gain for every node using a closed form.
 
-        gain[i] = trace_J - posterior_trace({i}), normalised to [0, 1]
-        by dividing by trace_J.  Used as an informative node feature.
+        For a single selected sensor at position i, the marginal trace reduction is:
+
+            gain[i] = trace(J) − posterior_trace({i})
+                    = ‖J[:, i]‖₂² / (J[i,i] + σ²)
+
+        This closed form avoids N separate posterior-trace computations (which
+        would be O(N³) in total via N linear solves), reducing initialisation to
+        O(N²) even for large N (e.g. N=256).
+
+        Gains are normalised to [0, 1] by dividing by the maximum gain.
+        The regularised kernel matrix is used for numerical stability when J is
+        not positive-definite (e.g. J₀ kernel).
         """
-        gains = np.zeros(self.N, dtype=np.float32)
-        for i in range(self.N):
-            gains[i] = self.trace_J - self._compute_posterior_trace(np.array([i]))
+        J_use = self._J_reg
+        # Vectorised closed form: gain[i] = ||J[:, i]||² / (J[i,i] + sigma²)
+        col_sq_norms = np.sum(J_use ** 2, axis=0)          # (N,)
+        denominators = self.diag_J + self.sigma ** 2        # (N,) - uses original J diagonal
+        gains = col_sq_norms / (np.abs(denominators) + 1e-12)
+        gains = gains.astype(np.float32)
         max_gain = gains.max()
         if max_gain > 1e-12:
             gains /= max_gain
