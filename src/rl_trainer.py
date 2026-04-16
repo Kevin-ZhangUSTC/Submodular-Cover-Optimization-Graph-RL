@@ -1,16 +1,20 @@
 """
-REINFORCE with Actor-Critic baseline trainer.
+Mini-batch REINFORCE with Actor-Critic baseline trainer.
 
 Algorithm
 ---------
-For each episode:
-    1. Roll out one full trajectory using the current GNN policy.
-    2. Compute discounted returns G_t.
-    3. Update the policy with the REINFORCE loss:
+For each update step:
+    1. Roll out *batch_size* full trajectories using the current GNN policy.
+    2. Compute discounted returns G_t for each trajectory.
+    3. Average the per-trajectory losses and update with a single gradient step:
            L_pi = -sum_t log pi(a_t | s_t) * (G_t - V(s_t))
-       and the value loss:
-           L_V = sum_t (G_t - V(s_t))^2
+           L_V  =  sum_t (G_t - V(s_t))^2
        plus an entropy bonus for exploration.
+    Averaging over batch_size trajectories reduces gradient variance by
+    roughly sqrt(batch_size) compared to single-episode REINFORCE.
+
+When batch_size=1 the method degrades to standard single-episode REINFORCE,
+preserving full backward-compatibility.
 
 Optional blended imitation loss
 ---------------------------------
@@ -93,6 +97,120 @@ class REINFORCETrainer:
         dict with keys: total_reward, n_selected, trace, satisfied, policy_loss,
                         value_loss, entropy, imitation_loss
         """
+        loss, stats = self._rollout_and_loss(env, greedy_trajectory, imitation_coef)
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        nn.utils.clip_grad_norm_(self.policy.parameters(), self.grad_clip)
+        self.optimizer.step()
+
+        self.episode_rewards.append(stats["total_reward"])
+        self.episode_lengths.append(float(stats["n_selected"]))
+        return stats
+
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def train_batch_episode(
+        self,
+        envs: List[SensorSelectionEnv],
+        batch_size: int = 8,
+        greedy_trajectories: Optional[List[Optional[List[int]]]] = None,
+        imitation_coef: float = 0.0,
+    ) -> Dict[str, float]:
+        """Collect *batch_size* trajectories and perform a single gradient update.
+
+        Each trajectory is sampled from a randomly chosen environment in *envs*.
+        The per-trajectory losses are averaged before the backward pass, which
+        reduces gradient variance by ~sqrt(batch_size) compared to single-episode
+        REINFORCE.
+
+        Parameters
+        ----------
+        envs                 : pool of environments to sample from
+        batch_size           : number of trajectories to collect per update
+        greedy_trajectories  : optional per-env greedy trajectories (same order as envs)
+        imitation_coef       : blended imitation coefficient
+
+        Returns
+        -------
+        dict with the same keys as ``train_episode`` (averaged over the batch),
+        plus ``env_index`` (index of the last sampled environment).
+        """
+        batch_loss = torch.tensor(0.0)
+        stats_sum: Dict[str, float] = {}
+        last_idx = 0
+
+        for _ in range(batch_size):
+            last_idx = random.randrange(len(envs))
+            env = envs[last_idx]
+            traj = (
+                greedy_trajectories[last_idx]
+                if greedy_trajectories is not None
+                else None
+            )
+            episode_loss, stats = self._rollout_and_loss(env, traj, imitation_coef)
+            batch_loss = batch_loss + episode_loss / batch_size
+            for k, v in stats.items():
+                stats_sum[k] = stats_sum.get(k, 0.0) + v / batch_size
+
+        self.optimizer.zero_grad()
+        batch_loss.backward()
+        nn.utils.clip_grad_norm_(self.policy.parameters(), self.grad_clip)
+        self.optimizer.step()
+
+        self.episode_rewards.append(stats_sum["total_reward"])
+        self.episode_lengths.append(stats_sum["n_selected"])
+        stats_sum["env_index"] = float(last_idx)
+        return stats_sum
+
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def train_multi_env_episode(
+        self,
+        envs: List[SensorSelectionEnv],
+        greedy_trajectories: Optional[List[Optional[List[int]]]] = None,
+        imitation_coef: float = 0.0,
+    ) -> Dict[str, float]:
+        """Sample a random environment from *envs* and run one training episode.
+
+        Parameters
+        ----------
+        envs                 : pool of environments to train on
+        greedy_trajectories  : optional per-env greedy trajectories (same order)
+        imitation_coef       : blended imitation coefficient
+
+        Returns
+        -------
+        Same dict as ``train_episode``, with an extra key ``env_index``.
+        """
+        idx = random.randrange(len(envs))
+        env = envs[idx]
+        traj = (
+            greedy_trajectories[idx]
+            if greedy_trajectories is not None
+            else None
+        )
+        stats = self.train_episode(env, greedy_trajectory=traj,
+                                   imitation_coef=imitation_coef)
+        stats["env_index"] = float(idx)
+        return stats
+
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _rollout_and_loss(
+        self,
+        env: SensorSelectionEnv,
+        greedy_trajectory: Optional[List[int]] = None,
+        imitation_coef: float = 0.0,
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        """Roll out one episode and compute the combined loss (without updating).
+
+        Returns
+        -------
+        (total_loss, stats_dict)
+            total_loss : torch.Tensor with grad_fn (ready for .backward())
+            stats_dict : plain-float metrics for logging
+        """
         state = env.reset()
         node_features, adj, _, selected = state
         adj_tensor = torch.tensor(adj, dtype=torch.float32)
@@ -156,57 +274,17 @@ class REINFORCETrainer:
             + imitation_coef * imitation_loss
         )
 
-        self.optimizer.zero_grad()
-        total_loss.backward()
-        nn.utils.clip_grad_norm_(self.policy.parameters(), self.grad_clip)
-        self.optimizer.step()
-
-        total_reward = float(sum(rewards))
-        self.episode_rewards.append(total_reward)
-        self.episode_lengths.append(float(env.n_selected))
-
-        return {
-            "total_reward": total_reward,
-            "n_selected": env.n_selected,
-            "trace": env.current_trace,
+        stats = {
+            "total_reward": float(sum(rewards)),
+            "n_selected": float(env.n_selected),
+            "trace": float(env.current_trace),
             "satisfied": float(env.is_satisfied),
             "policy_loss": float(policy_loss.item()),
             "value_loss": float(value_loss.item()),
             "entropy": float((-entropy_loss).item()),
             "imitation_loss": float(imitation_loss.item()),
         }
-
-    # ──────────────────────────────────────────────────────────────────────────
-
-    def train_multi_env_episode(
-        self,
-        envs: List[SensorSelectionEnv],
-        greedy_trajectories: Optional[List[Optional[List[int]]]] = None,
-        imitation_coef: float = 0.0,
-    ) -> Dict[str, float]:
-        """Sample a random environment from *envs* and run one training episode.
-
-        Parameters
-        ----------
-        envs                 : pool of environments to train on
-        greedy_trajectories  : optional per-env greedy trajectories (same order)
-        imitation_coef       : blended imitation coefficient
-
-        Returns
-        -------
-        Same dict as ``train_episode``, with an extra key ``env_index``.
-        """
-        idx = random.randrange(len(envs))
-        env = envs[idx]
-        traj = (
-            greedy_trajectories[idx]
-            if greedy_trajectories is not None
-            else None
-        )
-        stats = self.train_episode(env, greedy_trajectory=traj,
-                                   imitation_coef=imitation_coef)
-        stats["env_index"] = float(idx)
-        return stats
+        return total_loss, stats
 
     # ──────────────────────────────────────────────────────────────────────────
 

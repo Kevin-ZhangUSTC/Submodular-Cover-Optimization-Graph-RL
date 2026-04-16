@@ -11,7 +11,7 @@ Usage
                    [--imitation_episodes 200] [--imitation_decay 200]
                    [--multi_env] [--n_train_envs 50]
                    [--n_min 5] [--n_max 30] [--curriculum]
-                   [--no-plot]
+                   [--no-plot] [--batch_size 8]
 
 The script will:
   1. Build the kernel matrix J (Matern or J0, or load from .mat).
@@ -101,7 +101,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--n_max", type=int, default=config.N_MAX)
     p.add_argument("--curriculum", action="store_true", default=config.CURRICULUM)
     # Misc
-    p.add_argument("--no-plot", action="store_true")
+    p.add_argument("--batch_size", type=int, default=config.BATCH_SIZE,
+                   help="Mini-batch size: trajectories per gradient update (default 8)")
     return p.parse_args()
 
 
@@ -276,7 +277,17 @@ def main() -> None:
         else:
             imitation_coef = 0.0
 
-        if args.multi_env:
+        if args.batch_size > 1:
+            # Mini-batch REINFORCE: collect batch_size trajectories per update
+            stats = rl_trainer.train_batch_episode(
+                train_envs,
+                batch_size=args.batch_size,
+                greedy_trajectories=train_trajs,
+                imitation_coef=imitation_coef,
+            )
+            if curriculum is not None:
+                curriculum.record(bool(stats["satisfied"] >= 0.5))
+        elif args.multi_env:
             stats = rl_trainer.train_multi_env_episode(
                 train_envs,
                 greedy_trajectories=train_trajs,

@@ -49,8 +49,9 @@ PERIOD_HINT = 0.0       # J₀ periodicity hint: set to 2.4 * length_scale to en
 # ──────────────────────────────────────────────────────────────────────────────
 LR = 3e-4               # Adam learning rate
 GAMMA = 0.99            # discount factor for returns
-ENTROPY_COEF = 0.02     # entropy bonus coefficient (exploration)
+ENTROPY_COEF = 0.05     # entropy bonus coefficient (exploration; raised from 0.02 to improve exploration)
 VALUE_LOSS_COEF = 0.5   # coefficient for value-function loss
+BATCH_SIZE = 8          # mini-batch size: number of trajectories collected before each gradient update
 
 N_TRAIN_EPISODES = 2000 # total training episodes
 EVAL_INTERVAL = 100     # evaluate every N episodes
