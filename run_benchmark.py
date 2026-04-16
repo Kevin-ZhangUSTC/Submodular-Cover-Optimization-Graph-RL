@@ -109,7 +109,7 @@ def train_with_imitation(env, n_imit=100, n_rl=500, seed=0, hidden=64, n_layers=
     torch.manual_seed(seed)
     np.random.seed(seed)
     traj, _ = get_greedy_trajectory(env)
-    policy = GNNPolicy(node_feat_dim=8, hidden_dim=hidden,
+    policy = GNNPolicy(node_feat_dim=7, hidden_dim=hidden,
                        n_layers=n_layers, use_residual=True)
     imitator = ImitationTrainer(policy, lr=3e-3)
     for _ in range(n_imit):
@@ -132,7 +132,7 @@ def train_without_imitation(env, n_rl=2000, seed=0, hidden=64, n_layers=3,
     """
     torch.manual_seed(seed)
     np.random.seed(seed)
-    policy = GNNPolicy(node_feat_dim=8, hidden_dim=hidden,
+    policy = GNNPolicy(node_feat_dim=7, hidden_dim=hidden,
                        n_layers=n_layers, use_residual=True)
     trainer = REINFORCETrainer(policy, lr=5e-3, entropy_coef=entropy_coef)
     for _ in range(n_rl):

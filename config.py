@@ -23,7 +23,7 @@ KERNEL_LENGTH_SCALE = 3.0  # spatial length-scale
 # ──────────────────────────────────────────────────────────────────────────────
 # GNN architecture
 # ──────────────────────────────────────────────────────────────────────────────
-NODE_FEAT_DIM = 8       # input feature dimension per node (8: 5 original + position + 2 Fourier)
+NODE_FEAT_DIM = 7       # input feature dimension per node (7: is_selected + mean|J(i,j)|_S + trace_progress + marginal_gain + position + 2 Fourier)
 HIDDEN_DIM = 64         # hidden dimension in GNN layers
 N_GNN_LAYERS = 3        # number of message-passing layers
 LAYER_TYPE = "sage"     # "sage" or "gat"

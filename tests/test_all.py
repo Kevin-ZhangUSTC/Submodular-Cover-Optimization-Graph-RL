@@ -44,7 +44,7 @@ def env(small_J):
 
 @pytest.fixture
 def policy():
-    return GNNPolicy(node_feat_dim=8, hidden_dim=16, n_layers=2)
+    return GNNPolicy(node_feat_dim=7, hidden_dim=16, n_layers=2)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -160,7 +160,7 @@ class TestEnvironment:
 
     def test_reset_returns_correct_shape(self, env):
         nf, adj, trace, sel = env.reset()
-        assert nf.shape == (env.N, 8)
+        assert nf.shape == (env.N, 7)
         assert adj.shape == (env.N, env.N)
         assert float(trace) == pytest.approx(env.trace_J)
         assert not sel.any()
@@ -281,7 +281,7 @@ class TestEnvironment:
     def test_position_embedding_feature_range(self, env):
         """Feature 5 (position) should be in [0, 1] and monotonically increasing."""
         nf, _, _, _ = env.reset()
-        pos = nf[:, 5]
+        pos = nf[:, 4]
         assert np.all(pos >= 0.0 - 1e-6)
         assert np.all(pos <= 1.0 + 1e-6)
         assert pos[0] == pytest.approx(0.0, abs=1e-6)
@@ -292,8 +292,8 @@ class TestEnvironment:
     def test_fourier_features_zero_without_period_hint(self, env):
         """Features 6 and 7 should be zero when period_hint=0 (default)."""
         nf, _, _, _ = env.reset()
+        np.testing.assert_allclose(nf[:, 5], 0.0, atol=1e-6)
         np.testing.assert_allclose(nf[:, 6], 0.0, atol=1e-6)
-        np.testing.assert_allclose(nf[:, 7], 0.0, atol=1e-6)
 
     def test_fourier_features_nonzero_with_period_hint(self, small_J):
         """Features 6 and 7 should be non-trivial when period_hint > 0."""
@@ -301,11 +301,11 @@ class TestEnvironment:
         env = SensorSelectionEnv(small_J, sigma=0.5, epsilon=epsilon, period_hint=3.0)
         nf, _, _, _ = env.reset()
         # cos(0) = 1, so feature 6 of node 0 should be 1
-        assert nf[0, 6] == pytest.approx(1.0, abs=1e-5)
+        assert nf[0, 5] == pytest.approx(1.0, abs=1e-5)
         # sin(0) = 0, so feature 7 of node 0 should be 0
-        assert nf[0, 7] == pytest.approx(0.0, abs=1e-5)
+        assert nf[0, 6] == pytest.approx(0.0, abs=1e-5)
         # Not all the same
-        assert not np.allclose(nf[:, 6], nf[0, 6])
+        assert not np.allclose(nf[:, 5], nf[0, 5])
 
     def test_band_radius_adj_is_sparse(self, small_J):
         """With band_radius=1, adjacency only has entries for |i-j| <= 1."""
@@ -486,7 +486,7 @@ class TestGNNModel:
     def test_policy_gat_runs(self, env):
         """GAT-based policy should produce correct output shapes."""
         pol = GNNPolicy(
-            node_feat_dim=8, hidden_dim=16, n_layers=2,
+            node_feat_dim=7, hidden_dim=16, n_layers=2,
             layer_type="gat", n_heads=4
         )
         nf, adj, _, selected = env.reset()
@@ -499,7 +499,7 @@ class TestGNNModel:
 
     def test_policy_attention_pooling_runs(self, env):
         pol = GNNPolicy(
-            node_feat_dim=8, hidden_dim=16, n_layers=2,
+            node_feat_dim=7, hidden_dim=16, n_layers=2,
             use_attention_pooling=True
         )
         nf, adj, _, selected = env.reset()
@@ -518,7 +518,7 @@ class TestGNNModel:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             env6 = SensorSelectionEnv(J, sigma=0.5, epsilon=epsilon)
-        pol = GNNPolicy(node_feat_dim=8, hidden_dim=16, n_layers=2, signed_adj=True)
+        pol = GNNPolicy(node_feat_dim=7, hidden_dim=16, n_layers=2, signed_adj=True)
         nf, adj, _, selected = env6.reset()
         x = torch.tensor(nf, dtype=torch.float32)
         A_pos = torch.tensor(env6.adj_pos, dtype=torch.float32)
@@ -561,7 +561,7 @@ class TestRLTrainer:
 
     def test_compute_returns_discounting(self):
         """Returns must be discounted correctly."""
-        pol = GNNPolicy(node_feat_dim=8, hidden_dim=8, n_layers=1)
+        pol = GNNPolicy(node_feat_dim=7, hidden_dim=8, n_layers=1)
         trainer = REINFORCETrainer(pol, gamma=0.9)
         rewards = [1.0, 0.0, 1.0]
         returns = trainer._compute_returns(rewards)
@@ -606,7 +606,7 @@ class TestRLTrainer:
         """More rollouts should give a result with at most as many sensors."""
         torch.manual_seed(7)
         np.random.seed(7)
-        policy_k = GNNPolicy(node_feat_dim=8, hidden_dim=16, n_layers=2)
+        policy_k = GNNPolicy(node_feat_dim=7, hidden_dim=16, n_layers=2)
         trainer = REINFORCETrainer(policy_k, lr=3e-3, entropy_coef=0.05)
         for _ in range(50):
             trainer.train_episode(env)
@@ -771,7 +771,7 @@ class TestIntegration:
         epsilon = 0.25 * float(np.trace(J))
         env = SensorSelectionEnv(J, sigma=0.5, epsilon=epsilon)
 
-        policy = GNNPolicy(node_feat_dim=8, hidden_dim=32, n_layers=2)
+        policy = GNNPolicy(node_feat_dim=7, hidden_dim=32, n_layers=2)
         trainer = REINFORCETrainer(policy, lr=3e-3, entropy_coef=0.05)
 
         for _ in range(300):

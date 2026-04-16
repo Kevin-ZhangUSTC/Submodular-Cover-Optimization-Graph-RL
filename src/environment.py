@@ -50,17 +50,22 @@ period_hint : float (default 0.0)
 
 Node feature vector
 -------------------
+For the two kernel families considered (exp / Matérn ν=0.5 and J₀), the
+diagonal of J is identically 1 and all off-diagonal elements satisfy |J(i,j)|<1.
+Consequently corr(i,j) = J(i,j)/sqrt(J[i,i]·J[j,j]) = J(i,j), so feature 1
+below uses J(i,j) directly.  Feature 1 (normalised prior variance) has been
+removed because diag(J)≡1 makes it uninformative (identical for every node).
+
 idx | description                                         | range
  0  | is_selected (binary)                                | {0, 1}
- 1  | normalised prior variance diag(J)[i] / max(diag(J))| [0, 1]
- 2  | mean |corr(i, j)| for j in selected set            | [0, 1]
- 3  | current_trace / trace_J (global coverage progress) | [0, 1]
- 4  | single-sensor marginal gain (normalised)            | [0, 1]
- 5  | absolute position i / (N−1) (NEW)                  | [0, 1]
- 6  | cos(2π·i / period_hint)  (0 when period_hint=0)    | [-1, 1]
- 7  | sin(2π·i / period_hint)  (0 when period_hint=0)    | [-1, 1]
+ 1  | mean |J(i, j)| for j in selected set               | [0, 1]
+ 2  | current_trace / trace_J (global coverage progress) | [0, 1]
+ 3  | single-sensor marginal gain (normalised, static)    | [0, 1]
+ 4  | absolute position i / (N−1)                        | [0, 1]
+ 5  | cos(2π·i / period_hint)  (0 when period_hint=0)    | [-1, 1]
+ 6  | sin(2π·i / period_hint)  (0 when period_hint=0)    | [-1, 1]
 
-Total node_feat_dim = 8.
+Total node_feat_dim = 7.
 """
 
 from __future__ import annotations
@@ -109,7 +114,7 @@ class SensorSelectionEnv:
     # (node_features, adj_norm, current_trace, selected_mask)
 
     #: Total number of node features emitted by ``_get_state()``.
-    NODE_FEAT_DIM: int = 8
+    NODE_FEAT_DIM: int = 7
 
     def __init__(
         self,
@@ -323,43 +328,62 @@ class SensorSelectionEnv:
     def _get_state(self) -> "SensorSelectionEnv.State":
         """Compute per-node features and return the full state tuple.
 
-        Node feature vector (8 dimensions)
+        Node feature vector (7 dimensions)
         ------------------------------------
         0 : is_selected  -- binary (0/1)
-        1 : diag_J[i] / diag_J.max()  -- normalised prior variance
-        2 : correlation_with_selected  -- mean |corr(i, j)| for j in S
-        3 : current_trace / trace_J   -- global coverage progress (same for all nodes)
-        4 : single-sensor marginal gain (normalised, precomputed)
-        5 : position i / (N−1)  -- absolute position embedding (Plan A)
-        6 : cos(2π·i / period_hint)  -- Fourier spatial feature (Plan E; 0 if period_hint=0)
-        7 : sin(2π·i / period_hint)  -- Fourier spatial feature (Plan E; 0 if period_hint=0)
+        1 : mean |J(i, j)| for j in S  -- average absolute covariance with selected set
+            (equals mean |corr(i,j)| because diag(J)≡1 for exp/J₀ kernels)
+        2 : current_trace / trace_J   -- global coverage progress (same for all nodes)
+        3 : single-sensor marginal gain (normalised, static, precomputed at construction)
+
+            # ── Dynamic (greedy) alternative for feature 3 ──────────────────────
+            # Maintain self._posterior_cov (N×N) = current posterior covariance,
+            # initialised to J in reset() and rank-1 updated after each step:
+            #
+            #   k = action selected in step()
+            #   v = self._posterior_cov[:, k]          # column k
+            #   d = self._posterior_cov[k, k] + self.sigma**2
+            #   self._posterior_cov -= np.outer(v, v) / d   # Sherman-Morrison
+            #
+            # Then replace the four lines below that set node_features[:, 3] with:
+            #
+            #   col_sq = np.sum(self._posterior_cov ** 2, axis=0)   # (N,)
+            #   diag_pc = np.diag(self._posterior_cov)              # (N,)
+            #   dyn_gains = col_sq / (np.abs(diag_pc) + self.sigma**2 + 1e-12)
+            #   max_g = dyn_gains.max()
+            #   if max_g > 1e-12:
+            #       dyn_gains /= max_g
+            #   node_features[:, 3] = dyn_gains.astype(np.float32)
+            # ─────────────────────────────────────────────────────────────────────
+
+        4 : position i / (N−1)  -- absolute position embedding
+        5 : cos(2π·i / period_hint)  -- Fourier spatial feature (0 if period_hint=0)
+        6 : sin(2π·i / period_hint)  -- Fourier spatial feature (0 if period_hint=0)
         """
         node_features = np.zeros((self.N, self.NODE_FEAT_DIM), dtype=np.float32)
 
         node_features[:, 0] = self.selected.astype(np.float32)
-        # Normalise by max diagonal to be scale-invariant across problem instances
-        diag_max = self.diag_J.max()
-        node_features[:, 1] = (self.diag_J / (diag_max + 1e-12)).astype(np.float32)
 
-        # Feature 2: mean of absolute correlations with currently selected set
+        # Feature 1: mean |J(i, j)| for j in selected set.
+        # For exp/J₀ kernels diag(J)≡1, so J(i,j) = corr(i,j); no normalization needed.
         selected_indices = np.where(self.selected)[0]
         if len(selected_indices) > 0:
-            corr_with_selected = np.abs(self._corr[:, selected_indices]).sum(axis=1)
-            corr_with_selected /= (len(selected_indices) + 1e-12)
-            node_features[:, 2] = corr_with_selected.astype(np.float32)
+            abs_j_with_selected = np.abs(self.J[:, selected_indices]).sum(axis=1)
+            abs_j_with_selected /= len(selected_indices)
+            node_features[:, 1] = abs_j_with_selected.astype(np.float32)
 
-        # Feature 3: global trace progress (broadcast scalar)
-        node_features[:, 3] = float(self.current_trace / (self.trace_J + 1e-12))
+        # Feature 2: global trace progress (broadcast scalar)
+        node_features[:, 2] = float(self.current_trace / (self.trace_J + 1e-12))
 
-        # Feature 4: single-sensor marginal gain (precomputed at construction)
-        node_features[:, 4] = self._single_gains
+        # Feature 3: single-sensor marginal gain (precomputed at construction, static)
+        node_features[:, 3] = self._single_gains
 
-        # Feature 5: absolute position embedding (Plan A)
-        node_features[:, 5] = self._pos_enc
+        # Feature 4: absolute position embedding
+        node_features[:, 4] = self._pos_enc
 
-        # Features 6-7: Fourier spatial features for J₀ periodicity (Plan E)
-        node_features[:, 6] = self._fourier_cos
-        node_features[:, 7] = self._fourier_sin
+        # Features 5-6: Fourier spatial features for J₀ periodicity
+        node_features[:, 5] = self._fourier_cos
+        node_features[:, 6] = self._fourier_sin
 
         return node_features, self.adj_norm.astype(np.float32), self.current_trace, self.selected.copy()
 
