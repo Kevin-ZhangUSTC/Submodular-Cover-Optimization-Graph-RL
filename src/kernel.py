@@ -5,6 +5,12 @@ The Matérn covariance kernel is defined in terms of modified Bessel functions
 of the second kind (K_ν).  For ν ∈ {0.5, 1.5, 2.5} the kernel simplifies to
 an algebraic-exponential form; for general ν the scipy implementation is used.
 
+An additional "j0" kernel type is provided based on the zero-order Bessel
+function of the first kind J₀(r/l).  Unlike the Matérn family this kernel is
+oscillatory and can take negative values, so the resulting Toeplitz matrix is
+not necessarily positive-definite.  Helpers ``is_positive_definite`` and
+``regularize_matrix`` are provided to detect and correct indefiniteness.
+
 References
 ----------
 Rasmussen & Williams, "Gaussian Processes for Machine Learning", 2006,
@@ -12,7 +18,7 @@ Chapter 4.
 """
 
 import numpy as np
-from scipy.special import kv, gamma
+from scipy.special import j0, kv, gamma
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -77,6 +83,81 @@ def bessel_kernel(r: float, nu: float = 1.5, length_scale: float = 1.0) -> float
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Zero-order Bessel function of the first kind (J₀) kernel
+# ──────────────────────────────────────────────────────────────────────────────
+
+def bessel_j0_kernel(r: float, length_scale: float = 1.0) -> float:
+    """Zero-order Bessel function of the first kind kernel.
+
+    k(r) = J₀(|r| / l)
+
+    J₀(0) = 1 and the function is oscillatory, taking negative values for
+    |r|/l ≳ 2.4.  The resulting Toeplitz matrix is therefore **not**
+    guaranteed to be positive-definite.
+
+    Parameters
+    ----------
+    r : float
+        Distance (|i − j| for the Toeplitz case).
+    length_scale : float
+        Characteristic length-scale ℓ.
+
+    Returns
+    -------
+    float
+        Kernel value k(r).
+    """
+    return float(j0(float(np.abs(r)) / length_scale))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Positive-definiteness utilities
+# ──────────────────────────────────────────────────────────────────────────────
+
+def is_positive_definite(J: np.ndarray, tol: float = 0.0) -> bool:
+    """Return True if *J* is positive definite (all eigenvalues > tol).
+
+    Parameters
+    ----------
+    J : np.ndarray
+        Real symmetric matrix.
+    tol : float
+        Eigenvalue threshold.  The default of 0.0 checks strict positivity.
+
+    Returns
+    -------
+    bool
+    """
+    eigs = np.linalg.eigvalsh(J)
+    return bool(np.all(eigs > tol))
+
+
+def regularize_matrix(J: np.ndarray, min_eig: float = 1e-6) -> np.ndarray:
+    """Return a regularised copy of *J* that is positive-definite.
+
+    Computes the minimum eigenvalue and, if it is below *min_eig*, adds
+    ``(min_eig - λ_min) · I`` to make all eigenvalues ≥ *min_eig*.
+
+    Parameters
+    ----------
+    J : np.ndarray
+        Real symmetric matrix.
+    min_eig : float
+        Desired minimum eigenvalue after regularization.
+
+    Returns
+    -------
+    np.ndarray
+        Regularised matrix (copy; original is unchanged).
+    """
+    lam_min = float(np.linalg.eigvalsh(J).min())
+    if lam_min >= min_eig:
+        return J.copy()
+    shift = min_eig - lam_min
+    return J + shift * np.eye(J.shape[0], dtype=J.dtype)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Toeplitz matrix construction
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -84,29 +165,41 @@ def build_toeplitz_matrix(
     N: int,
     nu: float = 1.5,
     length_scale: float = 1.0,
+    kernel_type: str = "matern",
 ) -> np.ndarray:
-    """Build an N×N real symmetric Toeplitz matrix from the Bessel (Matérn) kernel.
+    """Build an N×N real symmetric Toeplitz matrix from a kernel function.
 
-    J[i, j] = k(|i − j|) where k is the Matérn-ν kernel.
+    J[i, j] = k(|i − j|)
 
     Parameters
     ----------
     N : int
         Matrix dimension.
     nu : float
-        Matérn smoothness parameter.
+        Matérn smoothness parameter (ignored when *kernel_type* is ``"j0"``).
     length_scale : float
         Kernel length-scale.
+    kernel_type : {"matern", "j0"}
+        Which kernel to use.  ``"matern"`` (default) produces a
+        positive-definite matrix; ``"j0"`` uses J₀ and may not be PD.
 
     Returns
     -------
     np.ndarray
-        Shape (N, N) real symmetric positive-definite Toeplitz matrix.
+        Shape (N, N) real symmetric Toeplitz matrix.
     """
-    first_row = np.array(
-        [bessel_kernel(i, nu=nu, length_scale=length_scale) for i in range(N)],
-        dtype=np.float64,
-    )
+    if kernel_type == "j0":
+        first_row = np.array(
+            [bessel_j0_kernel(i, length_scale=length_scale) for i in range(N)],
+            dtype=np.float64,
+        )
+    elif kernel_type == "matern":
+        first_row = np.array(
+            [bessel_kernel(i, nu=nu, length_scale=length_scale) for i in range(N)],
+            dtype=np.float64,
+        )
+    else:
+        raise ValueError(f"Unknown kernel_type '{kernel_type}'. Choose 'matern' or 'j0'.")
     indices = np.arange(N)
     J = first_row[np.abs(indices[:, None] - indices[None, :])]
     return J
